@@ -1,7 +1,7 @@
 package utility
 
 import breeze.linalg.svd.DenseSVD
-import breeze.linalg.{CSCMatrix, DenseMatrix, DenseVector, det, diag, eig, svd}
+import breeze.linalg.{*, CSCMatrix, DenseMatrix, DenseVector, det, diag, eig, svd}
 import norms.L2norm
 import scalismo.geometry._
 import scalismo.mesh.TriangleMesh
@@ -9,37 +9,21 @@ import scalismo.statisticalmodel.PointDistributionModel
 
 object MathHelp {
 
-  def testOrtogonality(f1: IndexedSeq[EuclideanVector[_3D]], f2: IndexedSeq[EuclideanVector[_3D]]): Double = {
-    f1.zip(f2).map(t => t._1.dot(t._2)).sum
-  }
-
-  def denseToSparse(dm: DenseMatrix[Double], tolerance: Double = 1E-10): CSCMatrix[Double] = {
-    CSCMatrix.tabulate(dm.rows, dm.cols)((x,y) => if (dm(x,y) > tolerance) dm(x,y) else 0.0)
-  }
-
   /**
-   * returns the marginal variance of a given vector for the model. projection and scaling with the kl basis
-   */
-  def getMarginalVariance(model: PointDistributionModel[_3D, TriangleMesh], vec: DenseVector[Double]): Double = {
-    throw new NotImplementedError()
-    //TODO check if it makes sense
-    println("test " + model.gp.klBasis.map(kl => math.pow(Tchange.seqToDenseVec(kl.eigenfunction.data).dot(vec),2)).sum)
-    model.gp.klBasis.map(kl => kl.eigenvalue * math.pow(Tchange.seqToDenseVec(kl.eigenfunction.data).dot(vec),2)).sum
-  }
-
-  /**
-   * pseudoinverse with svd and eigenvalue cutoff. rather expensive
+   * pseudoinverse with svd and eigenvalue cutoff. Economy version.
    */
   def pseudoInverse(mat: DenseMatrix[Double], svdecomp: Option[DenseSVD]=None, cutoff: Double = 1E-10): (DenseMatrix[Double], DenseSVD) = {
-    val sv = svdecomp.getOrElse(svd(mat))
-    val isv = invertSVD(sv)
+    val sv = svdecomp.getOrElse(breeze.linalg.svd.reduced(mat))
+    val r = sv.singularValues.data.count(_>cutoff)
+    val svr: DenseSVD = breeze.linalg.svd.SVD(sv.U(::,0 until r), sv.S(0 until r), sv.Vt(0 until r, ::))
+    val isv = invertSVD(svr, cutoff)
     (reconstruct(isv), isv)
   }
 
   def invertSVD(sv: DenseSVD, cutoff: Double = 1E-10): DenseSVD = {
     sv.copy(
       leftVectors = sv.rightVectors.t,
-      singularValues = sv.singularValues.map(d => if(d>cutoff)1.0/d else 0.0),
+      singularValues = sv.singularValues.map(d => if(d>cutoff)1.0/d else 0.0), //if singular values are 0.0 this keeps them -> but should use economy version probably
       rightVectors = sv.leftVectors.t
     )
   }
@@ -49,7 +33,8 @@ object MathHelp {
   }
 
   def reconstruct(sv: DenseSVD): DenseMatrix[Double] = {
-    sv.leftVectors * diag(sv.singularValues) * sv.rightVectors
+    //same as sv.leftVectors * diag(sv.singularValues) * sv.rightVectors but with the * broadcasting feature to avoid full matrix
+    (sv.leftVectors(*,::) * sv.singularValues) * sv.rightVectors
   }
 
   /**
@@ -86,25 +71,11 @@ object MathHelp {
     0.5*(tr-1+d)
   }
 
-//  def logklMetric(mat1: DenseMatrix[Double], mat2: DenseMatrix[Double], svde1: Option[DenseSVD]=None, svde2: Option[DenseSVD]=None): Double = {
-//    val sv1 = svde1.getOrElse(svd(mat1))
-//    val sv2 = svde1.getOrElse(svd(mat2))
-//    val mat1inv = pseudoInverse(mat1, Option(sv1))
-//    val logtr = diag(mat1inv*mat2).toArray.map(math.log).sum
-//    //    val d = math.log(determinante(mat2,Option(sv2))/determinante(mat1,Option(sv1)))
-//    val d = math.log(logdeterminante(mat2,Option(sv2))-logdeterminante(mat1,Option(sv1)))
-//    res
-//  }
-
   /**
    * simplified by assuming the same mean.
    */
   def bhattacharyyaDistance(mat1: DenseMatrix[Double], mat2: DenseMatrix[Double], svde1: Option[DenseSVD]=None, svde2: Option[DenseSVD]=None): Double = {
     val mat = 0.5*(mat1+mat2)
-//    val d1 = determinante(mat1,svde1)
-//    val d2 = determinante(mat2,svde2)
-//    val d = determinante(mat)
-//    0.5*math.log(d / math.sqrt(d1*d2))
     val d1 = logdeterminante(mat1,svde1)
     val d2 = logdeterminante(mat2,svde2)
     val d = logdeterminante(mat)
@@ -128,7 +99,7 @@ object MathHelp {
   }
 
   def frobeniusNorm(mat: DenseMatrix[Double]): Double = {
-//    math.sqrt(mat.data.foldLeft(0.0)((s,d) => s+d*d))
+    //    math.sqrt(mat.data.foldLeft(0.0)((s,d) => s+d*d))
     math.sqrt(breeze.linalg.sum(mat*:*mat))
   }
 
@@ -156,7 +127,7 @@ object MathHelp {
   }
   def getInAngle[D](v1: EuclideanVector[D], v2: EuclideanVector[D]): Double = {
     val dot = v1.normalize.dot(v2.normalize)
-    if (dot < -1.0) math.Pi else if (dot > 1.0) 0.0 else math.acos(dot)
+    if (dot < -0.9999) math.Pi else if (dot > 0.9999) 0.0 else math.acos(dot)
   }
 
   /**
@@ -173,69 +144,6 @@ object MathHelp {
   def listOrthogonalVectors(v: EuclideanVector[_3D]): IndexedSeq[EuclideanVector[_3D]] = {
     val vs = getOrthogonalVectors(v)
     IndexedSeq(v,vs._1,vs._2)
-  }
-
-  /**
-   * performs the edge check for all three edges.
-   * also returns the int for which edge the point originates (0=12, 1=13, 2=23)
-   */
-  def intersectThreeEdges(t1:Point[_2D], t2:Point[_2D], t3:Point[_2D]): (Double,Int) = {
-    Seq(checkEdge(t1,t2),checkEdge(t1,t3),checkEdge(t2,t3)).zipWithIndex.maxBy(_._1)
-  }
-  /**
-   * performs the edge check for two edges 12,13 with the reason that 23 should not be considered to save time.
-   */
-  def intersectTwoEdges(t1:Point[_2D], t2:Point[_2D], t3:Point[_2D]): (Double,Int) = {
-    Seq(checkEdge(t1,t2),checkEdge(t1,t3)).zipWithIndex.maxBy(_._1)
-  }
-  /**
-   * returns the max x value of x-axis intersection of the given edge. returns -Inf if no intersections
-   * exist.
-   */
-  def checkEdge(p1:Point[_2D], p2:Point[_2D]): Double = (p1.x,p1.y,p2.x,p2.y) match { //for speed changed to case class
-    case (x1 ,0.0,x2 ,0.0) => math.max(x1,x2)
-    case (_  ,_  ,x2 ,0.0) => x2
-    case (x1 ,0.0,_  ,_  ) => x1
-    case (x1 ,y1 ,x2 ,y2 ) => if (y1*y2<0.0){
-      val k = -y1/(y2-y1)
-      x1+k*(x2-x1)
-    } else Double.NegativeInfinity
-  }
-
-  /**
-   * t1 and t2 are on the xy plane and correspond to transformed triangle p1,p2,p3.
-   * returns t3~p3 in xy plane. p3 is chosen to be on x+ side while the t points should be chosen such that the normal
-   * under the same transformation is (0,0,1).
-   */
-  def projectLastPoint2D(t1:Point[_2D], t2:Point[_2D], p1:Point[_3D], p2:Point[_3D], p3:Point[_3D]): Point[_2D] = {
-    val d12 = (p2-p1).norm
-    val d13 = (p3-p1).norm
-    val d23 = (p3-p2).norm
-    val x = (d12*d12+d13*d13-d23*d23)/(2.0*d12)
-    val y = math.sqrt(d13*d13-x*x)
-    val v = (t2-t1).normalize
-    //TODO handle v.y==0. probably handled in edge detection
-    if (v.y==0) println("problematic v.y value in projectLastPoint2D")
-    val n = if (v.y>0.0) EuclideanVector2D(v.y,-v.x) else EuclideanVector2D(-v.y,v.x)
-    t1 + v*x + n*y
-  }
-
-  /**
-   * shift t_i by -p then rotate around origin such that Rn = (0,0,1) and Rv = (1,0,0).
-   * returns the resulting points expressed in two dims
-   */
-  def planeShift(p:Point[_3D], v:EuclideanVector[_3D], n:EuclideanVector[_3D], t1:Point[_3D], t2:Point[_3D], t3:Point[_3D]): (Point[_2D],Point[_2D],Point[_2D]) = {
-    val fn = EuclideanVector3D(0.0,0.0,1.0)
-    val fv = EuclideanVector3D(1.0,0.0,0.0)
-    val r1 = rotMatrixFromAxisAngle(fn.crossproduct(n),-getInAngle(fn,n))
-    val brv = r1*v.toBreezeVector
-    val av = EuclideanVector3D(brv(0),brv(1),brv(2))
-    val r2 = rotMatrixFromAxisAngle(fv.crossproduct(av),-getInAngle(fv,av))
-    val r = r2*r1
-    val p1 = r*(t1-p).toBreezeVector
-    val p2 = r*(t2-p).toBreezeVector
-    val p3 = r*(t3-p).toBreezeVector
-    (Point2D(p1(0),p1(1)),Point2D(p2(0),p2(1)),Point2D(p3(0),p3(1)))
   }
 
   /**

@@ -1,10 +1,10 @@
 package io
 
 import breeze.linalg.DenseVector
-import scalismo.geometry.{EuclideanVector, _3D}
-import utility.{Control, Tchange}
 
 import java.io.File
+import scalismo.geometry.{EuclideanVector, _3D}
+import utility.{Control, Tchange}
 
 class RunReader(file: File) {
   def getValue(name: String): Double = readValue(name).get
@@ -27,11 +27,12 @@ class RunReader(file: File) {
       source.getLines().find(line => line.startsWith(s"$name=")).map(_.drop(s"$name=".length))
     })
   }
-  def getVariables(): Set[String] = {
+  def getVariables(): IndexedSeq[String] = {
     Control.withResources(scala.io.Source.fromFile(file))(source => {
-      source.getLines().toSet
+      source.getLines().toIndexedSeq
     })
   }
+
 }
 
 object RunReader {

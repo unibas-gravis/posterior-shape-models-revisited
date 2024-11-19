@@ -5,7 +5,7 @@ import scalismo.common.{PointId, UnstructuredPoints}
 import scalismo.geometry._
 import scalismo.mesh._
 import scalismo.mesh.boundingSpheres.{ClosestPointInTriangle, ClosestPointIsVertex, ClosestPointOnLine, ClosestPointWithType}
-import scalismo.statisticalmodel.StatisticalMeshModel
+import scalismo.statisticalmodel.{MultivariateNormalDistribution, StatisticalMeshModel}
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -81,9 +81,27 @@ object Tchange {
       case p => p
     }
   }
+  def applyClpsOnMesh(mesh: TriangleMesh[_3D], points: IndexedSeq[ClosestPointWithType]): IndexedSeq[Point[_3D]] = {
+    points.map { //assumes the clps follow the triangulation of the given mesh
+      case ClosestPointIsVertex(_, _, pid) => mesh.pointSet.point(pid)
+      case ClosestPointOnLine(_, _, pids, bc) =>
+        val p1 = mesh.pointSet.point(pids._1)
+        val p2 = mesh.pointSet.point(pids._2)
+        p1 + (p2-p1) * bc
+      case ClosestPointInTriangle(_, _, tid, bcs) =>
+        val points = mesh.triangulation.triangle(tid).pointIds.map(mesh.pointSet.point)
+        val (p1, p2, p3) = (points(0), points(1), points(2))
+        ((p1.toVector * bcs.a) + (p2.toVector * bcs.b) + (p3.toVector * bcs.c)).toPoint
+    }
+  }
   def handleBarycentricWithTid(mesh: TriangleMesh[_3D], tid: TriangleId, b: BarycentricCoordinates): Point[_3D] = {
     val tr = mesh.triangulation.triangle(tid)
     b.interpolateProperty(mesh.pointSet.point(tr.ptId1),mesh.pointSet.point(tr.ptId2),mesh.pointSet.point(tr.ptId3))
+  }
+  def getZeroMeanNoise(sigma2:Double = 1.0): MultivariateNormalDistribution = {
+    val zm = DenseVector.zeros[Double](3)
+    val eye = sigma2 * DenseMatrix.eye[Double](3)
+    MultivariateNormalDistribution(zm,eye)
   }
 
   //uses closest point on surface to infer correspondence on the 'to' object
@@ -112,5 +130,35 @@ object Tchange {
   }
   def getMean(points: IndexedSeq[Point[_3D]]): Point[_3D] = {
     points.map(_.toVector).reduce(_+_).map(_/points.length).toPoint
+  }
+  def getMeanVar(data: IndexedSeq[Double]): MeanVar[Double] = {
+    require(data.length >= 2)
+    val mean = data.sum/data.length
+    MeanVar[Double](mean, data.map(d => (d-mean) * (d-mean)).sum / data.length)
+  }
+  def getMeanCovDV(data: IndexedSeq[DenseVector[Double]]): MeanCovDV = {
+    require(data.length >= 2)
+    val mean: DenseVector[Double] = data.reduce(_+_) / data.length.toDouble
+    val variance: DenseMatrix[Double] = data.foldLeft(DenseMatrix.zeros[Double](mean.length, mean.length))((s, v) =>
+      s + ((v-mean) * (v-mean).t) / data.length.toDouble
+    )
+    MeanCovDV(mean, variance)
+  }
+
+  def getMeanVarDV(data: IndexedSeq[DenseVector[Double]]): MeanVarDV = {
+    require(data.length >= 2)
+    val mean: DenseVector[Double] = data.reduce(_ + _) / data.length.toDouble
+    val variance: DenseVector[Double] = data.foldLeft(DenseVector.zeros[Double](mean.length))((s, v) =>
+      s + (v-mean)*:*(v-mean) / data.length.toDouble //*:* is elementwise multiplication
+    )
+    MeanVarDV(mean, variance)
+  }
+  case class MeanVar[T](mean: T, variance: T) {def m: T = mean; def v: T = variance}
+  case class MeanCovDV(mean: DenseVector[Double], variance: DenseMatrix[Double]) {def m: DenseVector[Double] = mean; def v: DenseMatrix[Double] = variance}
+  case class MeanVarDV(mean: DenseVector[Double], variance: DenseVector[Double]) {def m: DenseVector[Double] = mean; def v: DenseVector[Double] = variance}
+
+  def reverseMapping[A](data: IndexedSeq[A], f: (A) => Option[A]): (A) => Option[A] = {
+    val map = data.flatMap(a => f(a).map(b => (b, a))).toMap
+    (a: A) => map.get(a)
   }
 }

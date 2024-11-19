@@ -1,6 +1,6 @@
 organization  := "ch.unibas.cs.gravis"
 
-name := "eigenfunctionInspection"
+name := "posteriorShapeModelsRevisited"
 
 version       := "0.1"
 

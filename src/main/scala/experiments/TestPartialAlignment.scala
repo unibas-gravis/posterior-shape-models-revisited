@@ -2,10 +2,10 @@ package experiments
 
 import fitting.FitScripts.Sample
 import fitting.IcpFit.IcpSettings
-import fitting.{BidirectionalSamplingFromTarget, FitScripts, IcpFit, TargetSamplingUnique}
+import fitting._
 import io.RunWriter
 import norms.L2norm
-import scalismo.ModelUtils.alignShapesGpa
+import scalismo.{ModelRecenter, ModelUtils}
 import scalismo.common.{PointId, ScalarMeshField}
 import scalismo.geometry._
 import scalismo.io.{MeshIO, StatisticalModelIO}
@@ -14,11 +14,16 @@ import scalismo.statisticalmodel.{PointDistributionModel, StatisticalMeshModel}
 import scalismo.transformations.{Rotation3D, Translation3D, TranslationAfterRotation3D}
 import scalismo.ui.api.ScalismoUI
 import scalismo.utils.Random
-import scalismo.{ModelRecenter, ModelUtils}
 import utility.{MathHelp, MeshUtils, Tchange}
 
 import java.io.File
 
+
+/**
+ * The main experiment of femur loo reconstruction. if you set mcmc=false you get the experiment in the appendix where
+ * posterior shape models are used to perform reconstructions with fixed correspondence instead of the full fledged
+ * optimization over pose and correspondence
+ */
 object TestPartialAlignment {
 
   var ui: ScalismoUI = null
@@ -26,27 +31,35 @@ object TestPartialAlignment {
   val showRun = false
   val vizMeshFolder = "./data/alignment/scalarMeshes/"
 
-  val rposet = 2.0
-  val rposer = 0.02
-  val iidNoise = 1.0
-  val tildeLdmSigma = 1.0
-  val tScale = 2.0
-  val rScale = 6.0
-  val isoShapeScale = 0.1
-  val shapeScale = 0.3
-  val burnin = 500
-  val numSamples = 0
-  val subsampling = 4
-  val numRealignmentsMCMC = 10
-  val toUseLengthBasedRatio = true
-  val icpIterations = 25
-  val numOfLoo = 100 //100 there are 47 femurs. so any value > leads to all samples used.
-  val sigma = 1.0
-  val ratios = IndexedSeq(0.1,0.2,0.3,0.45,0.6,0.8)
+  val runSettings = {
+    val rotation = true
+    val mcmc = true
+
+    val rposet = 2.0
+    val rposer = 0.02
+    val iidNoise = 1.0
+    val tildeLdmSigma = 1.0
+    val tScale = 2.0
+    val rScale = 6.0
+    val isoShapeScale = 0.1
+    val shapeScale = 0.3
+    val burnin = 500
+    val numSamples = 5000
+    val subsampling = 4
+    val numRealignmentsMCMC = 10
+    val toUseLengthBasedRatio = true
+    val icpIterations = 150
+    val numOfLoo = 100 //100 there are 47 femurs. so any value > leads to all samples used.
+    val sigma = 1.0
+    val ratios = IndexedSeq(0.1,0.2,0.3,0.45,0.6,0.8)
+
+    RecoSettings(rotation, mcmc, rposet, rposer, iidNoise, tildeLdmSigma, tScale, rScale, isoShapeScale, shapeScale, burnin, numSamples, subsampling, numRealignmentsMCMC, toUseLengthBasedRatio, icpIterations, numOfLoo, sigma, ratios)
+  }
+
 
   def main(args: Array[String]): Unit = {
     scalismo.initialize()
-//    ui = ScalismoUI()
+    //    ui = ScalismoUI()
     implicit val rnd = scalismo.utils.Random(98237465L)
 
     assert(!(useParallel&&showRun), "should not use visualization when using parallel run")
@@ -54,10 +67,7 @@ object TestPartialAlignment {
 
     val femurFolder = "./data/femurData/registered/"
 
-    val rotation = true
-    val mcmc = true
-
-    assert((rotation && mcmc) || !mcmc, "if mcmc is used rotation should be enabled")
+    assert((runSettings.rotation && runSettings.mcmc) || !runSettings.mcmc, "if mcmc is used rotation should be enabled")
 
     val origShapes = {
       println("loading data")
@@ -67,29 +77,23 @@ object TestPartialAlignment {
     }
     println("loaded and aligned data")
 
-    val (writer,fileForWriter) = RunWriter("./data/alignment/synthLengthTest/partialRes$t.txt")
-    val (writerLong,_) = RunWriter(s"./data/alignment/synthLengthTest/${fileForWriter.getName.dropRight(4)}Verbose.txt")
-    writerLong.writeLiteral(s"# for infos on the hyperparameters look at the associated result file ${fileForWriter.getName}")
-    writer.writeLiteral(s"rotation = ${if(rotation) 1 else 0};")
-    writer.writeLiteral(s"mcmc = ${if(mcmc) 1 else 0};")
-    writer.writeLiteral(s"iidNoise = $iidNoise;")
-    writer.writeLiteral(s"tildeLdmSigma = $tildeLdmSigma;")
-    writer.writeLiteral(s"tScale = $tScale;")
-    writer.writeLiteral(s"rScale = $rScale;")
-    writer.writeLiteral(s"shapeScale = $shapeScale;")
-    writer.writeLiteral(s"isoShapeScale = $isoShapeScale;")
-    writer.writeLiteral(s"rposet = $rposet;")
-    writer.writeLiteral(s"rposer = $rposer;")
-    writer.writeLiteral(s"burnin = $burnin;")
-    writer.writeLiteral(s"numSamples = $numSamples;")
-    writer.writeLiteral(s"subsampling = $subsampling;")
-    writer.writeLiteral(s"numRealignmentsMCMC = $numRealignmentsMCMC;")
-    writer.writeLiteral(s"toUseLengthBasedRatio = ${if(toUseLengthBasedRatio) 1 else 0};")
-    writer.writeLiteral(s"icpIterations = $icpIterations;")
-    writer.writeLiteral(s"numOfLoo = $numOfLoo;")
-    writer.writeLiteral(s"sigma = ${sigma}")
+    //val model = StatisticalMeshModel.createUsingPCA(DataCollection.fromTriangleMesh3DSequence(origShapes.head._1, origShapes.map(_._1))).get
+    //    val means = (0 to 10).map(_ => Tchange.getMean(model.sample()))
+    //    {
+    //      val model = StatisticalMeshModel.createUsingPCA(DataCollection.fromTriangleMesh3DSequence(origShapes.head._1, origShapes.dropRight(1).map(_._1))).get
+    //      val projLast = model.project(origShapes.last._1)
+    //      val l2 = L2norm[_3D]()
+    //      val diff = Tchange.getDef(projLast.pointSet, origShapes.last._1)
+    //      val n = l2.norm2Vector(diff)
+    //      println(s"norm2 ${n} leading to avgNorm2 of ${n/model.mean.pointSet.numberOfPoints}")
+    //      println("test ended")
+    //    }
 
-    //two points at either ends of the femur
+    val methodDesc = if (runSettings.mcmc) "MCMC" else {if (runSettings.rotation) "Arot" else "At"}
+    val (writer,fileForWriter) = RunWriter(s"./data/femur/pythonScript/partialRes${methodDesc}.py", pythonStyle = true)
+    val (writerLong,_) = RunWriter(s"./data/femur/pythonScript/partialRes${methodDesc}Verbose.txt", pythonStyle = true)
+    runSettings.print(writer, Option(writerLong), Option(fileForWriter), Option("TestPartialAlignment run to test analytical posterior, MCMC, Icp performance"))
+
     val dirEncPids = (PointId(1840), PointId(3130))
 
     val ldms = {
@@ -101,29 +105,56 @@ object TestPartialAlignment {
         Point3D(55.907447814941406,131.927978515625,-127.22222900390625)
       )
       ps.map(model.mean.pointSet.findClosestPoint).map(_.id)
+      //      model.mean.pointSet.pointIds.toIndexedSeq
     }
 
+    //    (1 to 30).map(i => { //ldms are contained with ratio >= 0.16
+    //      val ratio = i/100.0
+    //      val (_,obs,_) = MeshUtils.getPartialMeshVector(origShapes.head._1, origShapes.head._1.pointSet.point(dirEncPids._1) - origShapes.head._1.pointSet.point(dirEncPids._2), ratio)
+    //      println(s"ldms in obs for ratio ${(ratio*100).toInt}%: ${ldms.forall(pid => obs.contains(pid))}")
+    //    })
+    //    println("done")
+    //    {
+    //      val ratios = IndexedSeq(0.1, 0.2, 0.3, 0.5, 0.65, 0.8)
+    //      ratios.zipWithIndex /*.par*/ .foreach(ratio => { //TODO the landmark fields are aligned to landmarks -> not observed for 0.05 and 0.15 -> increased knowledge
+    //        IndexedSeq(1.0 /*,10.0*/).foreach(sigma => {
+    //            val (_, obs, _) = MeshUtils.getPartialMeshVector(origShapes.head._1, origShapes.head._1.pointSet.point(dirEncPids._1) - origShapes.head._1.pointSet.point(dirEncPids._2), ratio._1)
+    //            ui.show(UnstructuredPointsDomain(obs.map(origShapes.head._1.pointSet.point)), s"ratio ${ratio._1}").opacity = 0.0
+    //        })
+    //      })
+    //      Thread.sleep(1000000)
+    //    }
+
+
+
+    //    ratios.foreach(ratio => {
+    //      val target = origShapes.head._1
+    //      val (_, obs, _) = MeshUtils.getPartialMeshVector(target, target.pointSet.point(dirEncPids._1) - target.pointSet.point(dirEncPids._2), ratio, toUseLengthBasedRatio)
+    //      println(s"ratio ${ratio} gives ${obs.length} out of ${target.pointSet.numberOfPoints}")
+    //    })
+    //    println("done")
     fieldNameSeq().foreach(s => {
-      writerLong.writeLiteral(s"${s}${sigma.toInt} = np.zeros((${math.min(numOfLoo, origShapes.length)}, ${ratios.length}))")
-      writerLong.writeLiteral(s"${s}Obs${sigma.toInt} = np.zeros((${math.min(numOfLoo, origShapes.length)}, ${ratios.length}))")
-      writerLong.writeLiteral(s"${s}Pre${sigma.toInt} = np.zeros((${math.min(numOfLoo, origShapes.length)}, ${ratios.length}))")
+      writerLong.writeLiteral(s"${s}${runSettings.sigma.toInt} = np.zeros((${math.min(runSettings.numOfLoo, origShapes.length)}, ${runSettings.ratios.length}))")
+      writerLong.writeLiteral(s"${s}Obs${runSettings.sigma.toInt} = np.zeros((${math.min(runSettings.numOfLoo, origShapes.length)}, ${runSettings.ratios.length}))")
+      writerLong.writeLiteral(s"${s}Pre${runSettings.sigma.toInt} = np.zeros((${math.min(runSettings.numOfLoo, origShapes.length)}, ${runSettings.ratios.length}))")
     })
 
-    ratios.zipWithIndex/*.par*/.foreach(ratio => {
+    runSettings.ratios.zipWithIndex.par.foreach(ratio => {
       val toIterate = if(useParallel) origShapes.par else origShapes
-      val res = toIterate.take(numOfLoo).map{ case (target,i) =>
-        val (_,obs,_) = MeshUtils.getPartialMeshVector(target, target.pointSet.point(dirEncPids._1) - target.pointSet.point(dirEncPids._2), ratio._1, toUseLengthBasedRatio)
+      val res = toIterate.take(runSettings.numOfLoo).map{ case (target,i) =>
+        val (_,obs,_) = MeshUtils.getPartialMeshVector(target, target.pointSet.point(dirEncPids._1) - target.pointSet.point(dirEncPids._2), ratio._1, runSettings.toUseLengthBasedRatio)
         val shapes = origShapes.filter(_._2 != i).map(_._1)
-        val res = checkPartial(shapes, target, ldms, obs, sigma, rotation, mcmc)
-        printOutDirect(writerLong, res, ratio._2, i, sigma)
+        val res = checkPartial(shapes, target, ldms, obs, dirEncPids, runSettings)
+        printOutDirect(writerLong, res, ratio._2, i, runSettings.sigma)
         res
       }.toIndexedSeq
       val average = res.reduce(_+_).map(_/res.length)
-      printOutCollected(writer, average, ratio._2, sigma)
+      printOutCollected(writer, average, ratio._2, runSettings.sigma)
       writer.writeCollectedSorted(ratio._1,ratio._2,s"obsRatio")
       println(s"fininshed for ratio ${(100*ratio._1).toInt}% obs")
     })
     writer.close()
+    writerLong.close()
   }
 
   def fieldNameSeq(): Seq[String] = {
@@ -176,12 +207,12 @@ object TestPartialAlignment {
     toPrint(results).foreach(t => write(t._1, index, t._2+postFix, sigma.toInt))
   }
 
-  def checkPartial(origShapes: IndexedSeq[TriangleMesh[_3D]], fulltarget: TriangleMesh[_3D], ldms: IndexedSeq[PointId], obs: IndexedSeq[PointId], sigma: Double, rotation: Boolean, mcmc: Boolean)(implicit rnd:Random): CompPostResults = {
+  def checkPartial(origShapes: IndexedSeq[TriangleMesh[_3D]], fulltarget: TriangleMesh[_3D], ldms: IndexedSeq[PointId], obs: IndexedSeq[PointId], pidsDirEncode: (PointId, PointId), runSettings: RecoSettings)(implicit rnd:Random): CompPostResults = {
     val (shapes, mean) = {
-      val res = alignShapesGpa(origShapes)
+      val res = ModelUtils.alignShapesGpa(origShapes)
       (res._1.map(_._1), res._2)
     }
-    val (modelLdm, modelAll, model) = if (rotation) {
+    val (modelLdm, modelAll, model) = if (runSettings.rotation) {
       val modelLdm = ModelUtils.pcaModelGpa(shapes, ldms)
       val modelAll = ModelUtils.pcaModelGpa(shapes, obs)
       val model = ModelUtils.pcaModelGpa(shapes, mean.pointSet.pointIds.toIndexedSeq)
@@ -193,11 +224,11 @@ object TestPartialAlignment {
       (modelLdm, modelAll, model)
     }
 
-    val res = if (mcmc) {
-      val modelTildeLdm = ModelUtils.pcaModelGpaTildeLdm(shapes, ldms, tildeLdmSigma)
-      compareToAlignedWithMCMC(model, modelLdm, modelTildeLdm, modelAll, obs, ldms, fulltarget, sigma)
+    val res = if (runSettings.mcmc) {
+      val modelTildeLdm = ModelUtils.pcaModelGpaTildeLdm(shapes, ldms, runSettings.tildeLdmSigma)
+      compareToAlignedMCMCicp(model, modelLdm, modelTildeLdm, modelAll, obs, ldms, fulltarget, pidsDirEncode, runSettings)
     } else {
-      compareToAligned(model, modelLdm, modelAll, obs, ldms, fulltarget, sigma, rotation)
+      compareToAlignedAnalytical(model, modelLdm, modelAll, obs, ldms, fulltarget, pidsDirEncode, runSettings)
     }
     res
   }
@@ -234,10 +265,11 @@ object TestPartialAlignment {
   }
 
   /**
-   * returns model variance of the original, the aligned model as a tuple.
+   * returns case class containing fitting information. loss and variance.
+   * * these values are distinguished for domains: all/observed/predicted
    */
-  def compareToAligned(model: StatisticalMeshModel, modelLdm: StatisticalMeshModel, modelAlign: StatisticalMeshModel, obs: IndexedSeq[PointId], ldms: IndexedSeq[PointId], target: TriangleMesh[_3D], sigma: Double = 1.0, rotate: Boolean = false): CompPostResults = {
-    require(!rotate || (obs.length>=3 && ldms.length>=3), "need at least three observations for rotation alignment")
+  def compareToAlignedAnalytical(model: StatisticalMeshModel, modelLdm: StatisticalMeshModel, modelAlign: StatisticalMeshModel, obs: IndexedSeq[PointId], ldms: IndexedSeq[PointId], target: TriangleMesh[_3D], pidsDirEncode: (PointId, PointId), runSettings: RecoSettings): CompPostResults = {
+    require(!runSettings.rotation || (obs.length>=3 && ldms.length>=3), "need at least three observations for rotation alignment")
     val nobs = {
       val sobs = obs.map(_.id).toSet
       model.mean.pointSet.pointIds.filter(pid => !sobs.contains(pid.id)).toIndexedSeq
@@ -248,32 +280,66 @@ object TestPartialAlignment {
     }
     //val tdList = obs.map(pid => (pid, target.pointSet.point(pid)))
     def getTd(mesh:TriangleMesh[_3D]): IndexedSeq[(PointId, Point[_3D])] = obs.map(pid => (pid, mesh.pointSet.point(pid)))
-    val origTarget = ModelUtils.alignShape(target, model.mean, Option(obs), rotate)._1
+    val origTarget = ModelUtils.alignShape(target, model.mean, Option(obs), runSettings.rotation)._1
     val origTd = getTd(origTarget) //also used for apprx model
-    val ldmTarget = ModelUtils.alignShape(target, modelLdm.mean, Option(obs), rotate)._1
+    val ldmTarget = ModelUtils.alignShape(target, modelLdm.mean, Option(obs), runSettings.rotation)._1
     val ldmTd = getTd(ldmTarget)
-    val ldmTargetLdm = ModelUtils.alignShape(target, modelLdm.mean, Option(ldms), rotate)._1
+    val ldmTargetLdm = ModelUtils.alignShape(target, modelLdm.mean, Option(ldms), runSettings.rotation)._1
     val ldmldmTd = getTd(ldmTargetLdm)
-    val alignTarget = ModelUtils.alignShape(target, modelAlign.mean, Option(obs), rotate)._1
+    val alignTarget = ModelUtils.alignShape(target, modelAlign.mean, Option(obs), runSettings.rotation)._1
     val fullTd = getTd(alignTarget)
 
-    val modelPost = model.posterior(origTd, sigma)
+    val modelPost = model.posterior(origTd, runSettings.sigma)
     val orig = toVar(modelPost)
-    val modelLdmPost = modelLdm.posterior(ldmTd, sigma)
+    val modelLdmPost = modelLdm.posterior(ldmTd, runSettings.sigma)
     val ldmalign = toVar(modelLdmPost)
-    val modelLdmLdmPost = modelLdm.posterior(ldmldmTd, sigma)
+    val modelLdmLdmPost = modelLdm.posterior(ldmldmTd, runSettings.sigma)
     val ldmldmalign = toVar(modelLdmLdmPost)
 
-    val alignPost = modelAlign.posterior(fullTd,sigma)
+    val alignPost = modelAlign.posterior(fullTd,runSettings.sigma)
     val align = toVar(alignPost)
-    val axisd = (model.mean.pointSet.point(PointId(1840)) - model.mean.pointSet.point(PointId(3130))).normalize
+    val axisd = (model.mean.pointSet.point(pidsDirEncode._1) - model.mean.pointSet.point(pidsDirEncode._2)).normalize
     val axis = MathHelp.listOrthogonalVectors(axisd)
     val modelApprx = {
-      val rec = ModelRecenter.recenter(model, obs)
-      if (rotate) ModelRecenter.rerotate(rec, obs, axis) else rec
+      val rec = ModelRecenter.recenterSsm(model, obs)
+      if (runSettings.rotation) ModelRecenter.rerotate(rec, obs, axis) else rec
     }
-    val apprxPost = modelApprx.posterior(origTd,sigma)
+    val apprxPost = modelApprx.posterior(origTd,runSettings.sigma)
     val apprx = toVar(apprxPost)
+
+    //    ui.show(modelPost.mean,"postOrigmean").opacity = 0.0
+    //    ui.show(origTarget, "origTarget").opacity = 0.0
+    //    ui.show(alignPost.mean,"postAlignmean").opacity = 0.0
+    //    ui.show(alignTarget, "alignTarget").opacity = 0.0
+    //    Thread.sleep(1000000)
+
+    //    ui.show(ui.createGroup("modelLdm"), modelLdm, "modelldm")
+    //    ui.show(ui.createGroup("model"), model, "model")
+    //    ui.show(ui.createGroup("modelFull"), modelAlign, "modelFull")
+    //    ui.show(ui.createGroup("modelApprx"), modelApprx, "modelAprrx")
+    //    Thread.sleep(1000000)
+
+
+    //    ui.show(ui.createGroup("modelLdm"), modelLdmPost, "modelldm")
+    //    ui.show(ui.createGroup("model"), modelPost, "model")
+    //    ui.show(ui.createGroup("modelFull"), alignPost, "modelFull")
+    //    ui.show(ui.createGroup("modelApprx"), apprxPost, "modelAprrx")
+    //    Thread.sleep(10000000)
+
+    //    ui.show(alignTarget, "aligntarget")
+    //    ui.show(alignPost.mean, "alignPostMean")
+    //    Thread.sleep(1000000000)
+
+    //    { //sanity check
+    //      val getTemp = (d: Double) => {
+    //        val prealign = RegressionHelp.augmentPosteriorPreFix(model, getTd(model.mean), 1.0, d, withRotation = false)
+    //        val postalign = ModelRecenter.recenter(prealign,obs)
+    //        toVar(postalign)
+    //      }
+    //      val postalignvar = getTemp(100.0)
+    //      val postalignvarHigh = getTemp(1000000000.0)
+    //      println("test done")
+    //    }
 
     val l2 = L2norm[_3D]()
     def loss(residual: IndexedSeq[EuclideanVector[_3D]]): CompItem =
@@ -293,178 +359,107 @@ object TestPartialAlignment {
       loss(Tchange.getDef(alignTarget.pointSet, alignPost.mean)),
       loss(Tchange.getDef(origTarget.pointSet, apprxPost.mean)), zCompitem,
       zCompitem,zCompitem,zCompitem,zCompitem,zCompitem,zCompitem,zCompitem,//again icp with corr
-
     )
     res
   }
 
-  def compareToAlignedWithMCMC(modelssm: StatisticalMeshModel, modelLdmssm: StatisticalMeshModel, modelTildeLdmssm: StatisticalMeshModel, modelAlignssm: StatisticalMeshModel, obs: IndexedSeq[PointId], ldms: IndexedSeq[PointId], target: TriangleMesh[_3D], sigma: Double = 1.0)(implicit rnd: Random): CompPostResults = {
+  /**
+   * returns case class containing fitting results. loss and variance for mcmc and just loss for icp.
+   * these values are distinguished for domains: all/observed/predicted
+   */
+  def compareToAlignedMCMCicp(modelssm: StatisticalMeshModel, modelLdmssm: StatisticalMeshModel, modelTildeLdmssm: StatisticalMeshModel, modelAlignssm: StatisticalMeshModel, obs: IndexedSeq[PointId], ldms: IndexedSeq[PointId], target: TriangleMesh[_3D], pidsDirEncode: (PointId, PointId), runSettings: RecoSettings)(implicit rnd: Random): CompPostResults = {
     require(obs.length>=3 && ldms.length>=3, "need at least three observations for rotation alignment")
     val model = ModelUtils.ssmToPdm(modelssm)
     val modelLdm = ModelUtils.ssmToPdm(modelLdmssm)
     val modelTildeLdm = ModelUtils.ssmToPdm(modelTildeLdmssm)
     val modelAlign = ModelUtils.ssmToPdm(modelAlignssm)
-    val axisd = (model.mean.pointSet.point(PointId(1840)) - model.mean.pointSet.point(PointId(3130))).normalize
+    val axisd = (model.mean.pointSet.point(pidsDirEncode._1) - model.mean.pointSet.point(pidsDirEncode._2)).normalize
     val nobs = {
       val sobs = obs.map(_.id).toSet
       model.mean.pointSet.pointIds.filter(pid => !sobs.contains(pid.id)).toIndexedSeq
     }
 
-    val l2 = L2norm[_3D]()
-    def loss(residual: IndexedSeq[EuclideanVector[_3D]]): CompItem =
-      CompItem(
-        l2.norm2Vector(residual) / residual.length,
-        l2.norm2Vector(obs.map(pid => residual(pid.id))) / obs.length,
-        l2.norm2Vector(nobs.map(pid => residual(pid.id))) / nobs.length
-      )
-    def handleChain(model: PointDistributionModel[_3D, TriangleMesh], chain: IndexedSeq[(Sample, Double)], target: TriangleMesh[_3D], name: String): (CompItem, CompItem, CompItem) =
-      handleChainMeshes(model, chain.map(t => (t._1.calcInstance(model), t._2)), target, name)
-    def handleChainMeshes(model: PointDistributionModel[_3D, TriangleMesh], chain: IndexedSeq[(TriangleMesh[_3D], Double)], target: TriangleMesh[_3D], name: String): (CompItem, CompItem, CompItem) = {
-      //returns the MAP and the average point variance
-      val best = chain.maxBy(_._2)._1
-      val meshpoints = chain.map(c => c._1.pointSet.pointSequence)
-      val mean = {
-        val scaledPoints = meshpoints.map(points => points.map(p => p.toVector.map(_*(1.0/chain.length))))
-        TriangleMesh3D(scaledPoints.transpose.map(_.reduce(_+_).toPoint), model.mean.triangulation)
-      }
-      val variance = {
-        meshpoints.foldLeft(IndexedSeq.fill(model.mean.pointSet.numberOfPoints)(0.0)){case (vs, points) => {
-          points.zip(mean.pointSet.pointSequence).map(t => {
-            val v = (t._1-t._2).toBreezeVector
-            //breeze.linalg.sum(breeze.linalg.diag(v*v.t)) //extended notation
-            v.t*v
-          }).zip(vs).map(t => t._1+t._2)
-        }}
-      }.map(d => d/meshpoints.length)
-      val residual = Tchange.getDef(target, best)
-      val residualCorr = Tchange.getDef(target.pointSet, best)
-
-      if (showRun){
-        val dv = EuclideanVector3D(0.0,1.0,0.4).map(_*100)
-        val tf = name match {
-          case "original" => Translation3D.apply(EuclideanVector3D.zero)
-          case "ldm" => Translation3D.apply(dv)
-          case "ldmldm" => Translation3D.apply(dv.map(_*2.0))
-          case "ldmtildeLdm" => Translation3D.apply(dv.map(_*3.0))
-          case "aligned" => Translation3D.apply(dv.map(_*4.0))
-          case "apprx" => Translation3D.apply(dv.map(_*5.0))
-          case "iterApprx" => Translation3D.apply(dv.map(_*6.0))
-
-          case _ => Translation3D.apply(EuclideanVector3D.zero)
-        }
-        val varianceMesh = ScalarMeshField(mean.transform(tf), variance)
-        val lossMesh =  ScalarMeshField(mean.transform(tf), residual.map(_.norm))
-        val lossCorrMesh =  ScalarMeshField(mean.transform(tf), residualCorr.map(_.norm))
-        Seq((varianceMesh,"Var"),(lossMesh, "Loss"),(lossCorrMesh, "LossCorr")).map{case (scalarMesh, postfix) => {
-          MeshIO.writeScalarMeshField(scalarMesh, new File(vizMeshFolder, s"${name}${postfix}.vtk"))
-          ui.show(scalarMesh, name+postfix)
-        }}
-      }
-
-      (
-        CompItem( //variance
-        variance.sum/model.mean.pointSet.numberOfPoints,
-        obs.map(pid => variance(pid.id)).sum/obs.length,
-        nobs.map(pid => variance(pid.id)).sum/nobs.length
-      ),
-        loss(residual), //loss clp
-        loss(residualCorr) //loss correspondence
-      )
-    }
+    //val tdList = obs.map(pid => (pid, target.pointSet.point(pid)))
     val rndPose = (
-      EuclideanVector3D(rnd.scalaRandom.nextGaussian()*rposet,rnd.scalaRandom.nextGaussian()*rposet,rnd.scalaRandom.nextGaussian()*rposet),
-      rnd.scalaRandom.nextGaussian()*rposer,rnd.scalaRandom.nextGaussian()*rposer,rnd.scalaRandom.nextGaussian()*rposer
+      EuclideanVector3D(rnd.scalaRandom.nextGaussian()*runSettings.rposet,rnd.scalaRandom.nextGaussian()*runSettings.rposet,rnd.scalaRandom.nextGaussian()*runSettings.rposet),
+      rnd.scalaRandom.nextGaussian()*runSettings.rposer,rnd.scalaRandom.nextGaussian()*runSettings.rposer,rnd.scalaRandom.nextGaussian()*runSettings.rposer
     )
-    def getNoisyTarget(mesh: TriangleMesh[_3D]) = {
-      val rotp = Tchange.getMean(mesh, Option(obs))
-      val noisyPoseT = TranslationAfterRotation3D.apply(Translation3D(rndPose._1), Rotation3D(rndPose._2, rndPose._3, rndPose._4, rotp))
-      val noisyAlignedTarget = mesh.transform(noisyPoseT)
-      noisyAlignedTarget
-    }
-    val origTarget = getNoisyTarget(ModelUtils.alignShape(target, model.mean, Option(obs), true)._1) //precise x target
-    val ldmTarget = getNoisyTarget(ModelUtils.alignShape(target, modelLdm.mean, Option(obs), true)._1) //precise x target
-    val ldmTargetLdm = getNoisyTarget(ModelUtils.alignShape(target, modelLdm.mean, Option(ldms), true)._1) //precise ldm target
+    val origTarget = getNoisyTarget(ModelUtils.alignShape(target, model.mean, Option(obs), true)._1, obs, rndPose) //precise x target
+    val ldmTarget = getNoisyTarget(ModelUtils.alignShape(target, modelLdm.mean, Option(obs), true)._1, obs, rndPose) //precise x target
+    val ldmTargetLdm = getNoisyTarget(ModelUtils.alignShape(target, modelLdm.mean, Option(ldms), true)._1, obs, rndPose) //precise ldm target
     val ldmTargetTildeLdm = { //stdv tildeLdmSigma for landmark noise. still on surface                        //tilde ldm target
       val ldmsObs = ldms.map(pid => (target.pointSet.point(pid), modelLdm.mean.pointSet.point(pid)))
       val tildeLdms = ldmsObs.map(t => {
         val rndv = EuclideanVector3D(rnd.scalaRandom.nextGaussian(),rnd.scalaRandom.nextGaussian(),rnd.scalaRandom.nextGaussian())
-        (target.operations.closestPointOnSurface(t._1 + rndv * tildeLdmSigma).point, t._2)
+        (target.operations.closestPointOnSurface(t._1 + rndv * runSettings.tildeLdmSigma).point, t._2)
       })
       val transform = ModelUtils.alignLdmsToLdms(tildeLdms, true)._2
-      getNoisyTarget(target.transform(transform)) //tilde ldm target
+      getNoisyTarget(target.transform(transform), obs, rndPose) //tilde ldm target
     }
-    val alignTarget = getNoisyTarget(ModelUtils.alignShape(target, modelAlign.mean, Option(obs), true)._1) //precise x target
+    val alignTarget = getNoisyTarget(ModelUtils.alignShape(target, modelAlign.mean, Option(obs), true)._1, obs, rndPose) //precise x target
 
     val obsset = obs.map(_.id).toSet
-    def makePartial(mesh: TriangleMesh[_3D]) = mesh.operations.maskPoints(pid => obsset.contains(pid.id)).transformedMesh
-    def prepareTarget(mesh: TriangleMesh[_3D]) = {
-      val partial = makePartial(mesh)
-      (partial, Tchange.getMean(partial.pointSet.pointSequence))
-    }
-    def getChain(model: PointDistributionModel[_3D, TriangleMesh], target: TriangleMesh[_3D], rotPoint: Point[_3D]) = {
-      FitScripts.fitPartial(model, target, axisd, rotPoint, iidNoiseSigma = iidNoise, burnin = burnin, numSamples = numSamples, subsampling = subsampling, tScale = tScale, rScale = rScale, shapeScale = shapeScale, isoShapeScale = isoShapeScale)
-    }
 
     //creation of the apprxmodel with gt correspondence
     val axis = MathHelp.listOrthogonalVectors(axisd)
     val modelApprxssm = {
-      val rec = ModelRecenter.recenter(modelssm, obs)
+      val rec = ModelRecenter.recenterSsm(modelssm, obs)
       ModelRecenter.rerotate(rec, obs, axis)
     }
     val modelApprx = ModelUtils.ssmToPdm(modelApprxssm)
 
     //starting the fitting processes
-    val zCompitem = (CompItem(0.0,0.0,0.0),CompItem(0.0,0.0,0.0),CompItem(0.0,0.0,0.0)) //no run object
+    val zCompitem = (CompItem(0.0,0.0,0.0), CompItem(0.0,0.0,0.0), CompItem(0.0,0.0,0.0)) //no run object
     //precise omega model, precise x target
-    val (orig, origl, origlc) = if (numSamples > 0) {
-      val (partial, rotpoint) = prepareTarget(origTarget)
-      val modelChain = getChain(model, partial, rotpoint)
-      handleChain(model, modelChain, origTarget, "original")
+    val (orig, origl, origlc) = if (runSettings.numSamples > 0) {
+      val (partial, rotpoint) = prepareTarget(origTarget, obsset)
+      val modelChain = getChain(model, partial, rotpoint, axisd, runSettings)
+      handleChain(model, modelChain, origTarget, obs, nobs, "original")
     } else zCompitem
     //precise ldm model, precise x target
-    val (ldmalign, ldmalignl, ldmalignlc) = if (numSamples > 0) {
+    val (ldmalign, ldmalignl, ldmalignlc) = if (runSettings.numSamples > 0) {
       val modelLdmChain = {
-        val (partial, _) = prepareTarget(ldmTarget)
+        val (partial, _) = prepareTarget(ldmTarget, obsset)
         val rotpoint = Tchange.getMean(ldms.map(modelLdm.mean.pointSet.point))
-        getChain(modelLdm, partial, rotpoint)
+        getChain(modelLdm, partial, rotpoint, axisd, runSettings)
       }
-      handleChain(modelLdm, modelLdmChain, ldmTarget, "ldm")
+      handleChain(modelLdm, modelLdmChain, ldmTarget, obs, nobs, "ldm")
     } else zCompitem
     //precise ldm model, precise ldm target
-    val (ldmalignldm, ldmalignldml, ldmalignldmlc) = if (numSamples > 0) {
+    val (ldmalignldm, ldmalignldml, ldmalignldmlc) = if (runSettings.numSamples > 0) {
       val modelLdmChain = {
-        val (partial, _) = prepareTarget(ldmTargetLdm)
+        val (partial, _) = prepareTarget(ldmTargetLdm, obsset)
         val rotpoint = Tchange.getMean(ldms.map(modelLdm.mean.pointSet.point))
-        getChain(modelLdm, partial, rotpoint)
+        getChain(modelLdm, partial, rotpoint, axisd, runSettings)
       }
-      handleChain(modelLdm, modelLdmChain, ldmTarget, "ldmldm")
+      handleChain(modelLdm, modelLdmChain, ldmTarget, obs, nobs, "ldmldm")
     } else zCompitem
     //tilde ldm model, tilde ldm target
-    val (ldmaligntildeldm, ldmaligntildeldml, ldmaligntildeldmlc) = if (numSamples > 0) {
+    val (ldmaligntildeldm, ldmaligntildeldml, ldmaligntildeldmlc) = if (runSettings.numSamples > 0) {
       val modelLdmChain = {
-        val (partial, _) = prepareTarget(ldmTargetTildeLdm)
+        val (partial, _) = prepareTarget(ldmTargetTildeLdm, obsset)
         val rotpoint = Tchange.getMean(ldms.map(modelTildeLdm.mean.pointSet.point))
-        getChain(modelTildeLdm, partial, rotpoint)
+        getChain(modelTildeLdm, partial, rotpoint, axisd, runSettings)
       }
-      handleChain(modelTildeLdm, modelLdmChain, ldmTarget, "ldmtildeldm")
+      handleChain(modelTildeLdm, modelLdmChain, ldmTarget, obs, nobs, "ldmtildeldm")
     } else zCompitem
     //precise x model, precise x target
-    val (align, alignl, alignlc) = if (numSamples > 0) {
-      val (partial, rotpoint) = prepareTarget(alignTarget)
-      val modelAlignChain = getChain(modelAlign, partial, rotpoint)
-      handleChain(modelAlign, modelAlignChain, alignTarget, "aligned")
+    val (align, alignl, alignlc) = if (runSettings.numSamples > 0) {
+      val (partial, rotpoint) = prepareTarget(alignTarget, obsset)
+      val modelAlignChain = getChain(modelAlign, partial, rotpoint, axisd, runSettings)
+      handleChain(modelAlign, modelAlignChain, alignTarget, obs, nobs, "aligned")
     } else zCompitem
-    //our x model, precise x target
-    val (apprx, apprxl, apprxlc) = if (numSamples > 0) {
-      val (partial, rotpoint) = prepareTarget(origTarget)
-      val modelApprxChain = getChain(modelApprx, partial, rotpoint)
-      handleChain(modelApprx, modelApprxChain, origTarget, "apprx")
+    //my x model, precise x target
+    val (apprx, apprxl, apprxlc) = if (runSettings.numSamples > 0) {
+      val (partial, rotpoint) = prepareTarget(origTarget, obsset)
+      val modelApprxChain = getChain(modelApprx, partial, rotpoint, axisd, runSettings)
+      handleChain(modelApprx, modelApprxChain, origTarget, obs, nobs, "apprx")
     } else zCompitem
-    //our tilde x model, precise x target
-    val (online, onlinel, onlinelc) = if (numSamples > 0) {
-      val (partial, rotpoint) = prepareTarget(origTarget)
-      val onlineChain = FitScripts.fitPartialWithAlignment(model, partial, axisd, rotpoint, iidNoiseSigma = iidNoise, burnin = burnin, numSamples = numSamples, subsampling = subsampling, tScale = tScale, rScale = rScale, shapeScale = shapeScale, realignments = numRealignmentsMCMC, samplingStrategy = TargetSamplingUnique())
-      handleChainMeshes(model, onlineChain, origTarget, "iterApprx")
+    //my tilde x model, precise x target
+    val (online, onlinel, onlinelc) = if (runSettings.numSamples > 0) {
+      val (partial, rotpoint) = prepareTarget(origTarget, obsset)
+      val onlineChain = FitScripts.fitPartialWithAlignment(model, partial, axisd, rotpoint, iidNoiseSigma = runSettings.iidNoise, burnin = runSettings.burnin, numSamples = runSettings.numSamples, subsampling = runSettings.subsampling, tScale = runSettings.tScale, rScale = runSettings.rScale, shapeScale = runSettings.shapeScale, realignments = runSettings.numRealignmentsMCMC, samplingStrategy = TargetSampling(), correspondenceStrategy = TargetSamplingUnique())
+      handleChainMeshes(model, onlineChain, origTarget, obs, nobs, "iterApprx")
     } else zCompitem
 
     if (showRun) {
@@ -475,35 +470,150 @@ object TestPartialAlignment {
       }
     }
 
-    val icpSettings = IcpSettings(BidirectionalSamplingFromTarget(), true, icpIterations, sigma2 = sigma*sigma)
-    val (icp,icpit) = IcpFit.apply(model, prepareTarget(origTarget)._1, icpSettings)
-    val (icpAlign,icpAlignit) = IcpFit.apply(modelAlign, prepareTarget(alignTarget)._1, icpSettings)
-    val (icpLdm,icpLdmit) = IcpFit.apply(modelLdm, prepareTarget(ldmTarget)._1, icpSettings)
-    val (icpLdmLdm,icpLdmLdmit) = IcpFit.apply(modelLdm, prepareTarget(ldmTargetLdm)._1, icpSettings)
-    val (icpLdmTildeLdm,icpLdmTildeLdmit) = IcpFit.apply(modelTildeLdm, prepareTarget(ldmTargetTildeLdm)._1, icpSettings)
-    val (icpApprx,icpApprxit) = IcpFit.apply(modelApprx, prepareTarget(origTarget)._1, icpSettings)
-    val (icpOnline,icpOnlineit) = IcpFit.fitWithOnlineAlignment(model, prepareTarget(origTarget)._1, icpSettings, true, axisd, Option(TargetSamplingUnique()))
+    val icpSettings = IcpSettings[SamplingStrategy](BidirectionalSamplingFromTarget(), true, runSettings.icpIterations, sigma2 = runSettings.sigma*runSettings.sigma)
+    val (icp,icpit) = if (runSettings.icpIterations > 0) IcpFit.apply(model, prepareTarget(origTarget, obsset)._1, icpSettings) else (model.mean, 0)
+    val (icpAlign,icpAlignit) = if (runSettings.icpIterations > 0) IcpFit.apply(modelAlign, prepareTarget(alignTarget, obsset)._1, icpSettings) else (modelAlign.mean, 0)
+    val (icpLdm,icpLdmit) = if (runSettings.icpIterations > 0) IcpFit.apply(modelLdm, prepareTarget(ldmTarget, obsset)._1, icpSettings) else (modelLdm.mean, 0)
+    val (icpLdmLdm,icpLdmLdmit) = if (runSettings.icpIterations > 0) IcpFit.apply(modelLdm, prepareTarget(ldmTargetLdm, obsset)._1, icpSettings) else (modelLdm.mean, 0)
+    val (icpLdmTildeLdm,icpLdmTildeLdmit) = if (runSettings.icpIterations > 0) IcpFit.apply(modelTildeLdm, prepareTarget(ldmTargetTildeLdm, obsset)._1, icpSettings) else (modelTildeLdm.mean, 0)
+    val (icpApprx,icpApprxit) = if (runSettings.icpIterations > 0) IcpFit.apply(modelApprx, prepareTarget(origTarget, obsset)._1, icpSettings) else (modelApprx.mean, 0)
+    val (icpOnline,icpOnlineit) = if (runSettings.icpIterations > 0) IcpFit.fitWithOnlineAlignment(model, prepareTarget(origTarget, obsset)._1, icpSettings, true, axisd, Option(TargetSamplingUnique())) else (model.mean, 0)
+
+    def loss(residual: IndexedSeq[EuclideanVector[_3D]]): CompItem = lossFunction(residual, obs, nobs)
 
     val res = CompPostResults(
       original=orig, ldmAlign=ldmalign, ldmAlignLdm=ldmalignldm, ldmAlignTildeLdm=ldmaligntildeldm, fullAlign=align, apprxAlign=apprx, onlineAlign=online, //variance
       originalLoss=origl, ldmAlignLoss=ldmalignl, ldmAlignLossLdm=ldmalignldml, ldmAlignLossTildeLdm=ldmaligntildeldml, fullAlignLoss=alignl, apprxAlignLoss=apprxl, onlineAlignLoss=onlinel, //mean l2 loss with clp
-      icpOrigLoss=loss(Tchange.getDef(origTarget, icp)),
-      icpLdmLoss=loss(Tchange.getDef(ldmTarget, icpLdm)),
-      icpLdmLossLdm=loss(Tchange.getDef(ldmTargetLdm, icpLdmLdm)),
-      icpLdmLossTildeLdm=loss(Tchange.getDef(ldmTargetTildeLdm, icpLdmTildeLdm)),
-      icpAlignLoss=loss(Tchange.getDef(alignTarget, icpAlign)),
-      icpApprxLoss=loss(Tchange.getDef(origTarget, icpApprx)),
-      icpOnlineLoss=loss(Tchange.getDef(origTarget, icpOnline)),
+      icpOrigLoss=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(origTarget, icp)),
+      icpLdmLoss=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(ldmTarget, icpLdm)),
+      icpLdmLossLdm=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(ldmTargetLdm, icpLdmLdm)),
+      icpLdmLossTildeLdm=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(ldmTargetTildeLdm, icpLdmTildeLdm)),
+      icpAlignLoss=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(alignTarget, icpAlign)),
+      icpApprxLoss=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(origTarget, icpApprx)),
+      icpOnlineLoss=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(origTarget, icpOnline)),
       originalLossCorr=origlc, ldmAlignLossCorr=ldmalignlc, ldmAlignLossCorrLdm=ldmalignldmlc, ldmAlignLossCorrTildeLdm=ldmaligntildeldmlc, fullAlignLossCorr=alignlc, apprxAlignLossCorr=apprxlc, onlineAlignLossCorr=onlinelc, //mean l2 loss with correspondence
-      icpOrigLossCorr=loss(Tchange.getDef(origTarget.pointSet, icp)),
-      icpLdmLossCorr=loss(Tchange.getDef(ldmTarget.pointSet, icpLdm)),
-      icpLdmLossCorrLdm=loss(Tchange.getDef(ldmTargetLdm.pointSet, icpLdmLdm)),
-      icpLdmLossCorrTildeLdm=loss(Tchange.getDef(ldmTargetTildeLdm.pointSet, icpLdmTildeLdm)),
-      icpAlignLossCorr=loss(Tchange.getDef(alignTarget.pointSet, icpAlign)),
-      icpApprxLossCorr=loss(Tchange.getDef(origTarget.pointSet, icpApprx)),
-      icpOnlineLossCorr=loss(Tchange.getDef(origTarget.pointSet, icpOnline))
+      icpOrigLossCorr=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(origTarget.pointSet, icp)),
+      icpLdmLossCorr=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(ldmTarget.pointSet, icpLdm)),
+      icpLdmLossCorrLdm=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(ldmTargetLdm.pointSet, icpLdmLdm)),
+      icpLdmLossCorrTildeLdm=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(ldmTargetTildeLdm.pointSet, icpLdmTildeLdm)),
+      icpAlignLossCorr=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(alignTarget.pointSet, icpAlign)),
+      icpApprxLossCorr=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(origTarget.pointSet, icpApprx)),
+      icpOnlineLossCorr=if (runSettings.icpIterations == 0) zCompitem._1 else loss(Tchange.getDef(origTarget.pointSet, icpOnline))
     )
     res
+  }
+
+  def getNoisyTarget(mesh: TriangleMesh[_3D], obs: IndexedSeq[PointId], rndPose: (EuclideanVector[_3D], Double, Double, Double)) = {
+    val rotp = Tchange.getMean(mesh, Option(obs))
+    val noisyPoseT = TranslationAfterRotation3D.apply(Translation3D(rndPose._1), Rotation3D(rndPose._2, rndPose._3, rndPose._4, rotp))
+    val noisyAlignedTarget = mesh.transform(noisyPoseT)
+    noisyAlignedTarget
+  }
+
+  def handleChain(model: PointDistributionModel[_3D, TriangleMesh], chain: IndexedSeq[(Sample, Double)], target: TriangleMesh[_3D], obs: IndexedSeq[PointId], nobs: IndexedSeq[PointId], name: String): (CompItem, CompItem, CompItem) =
+    handleChainMeshes(model, chain.map(t => (t._1.calcInstance(model), t._2)), target, obs, nobs, name)
+
+  def makePartial(mesh: TriangleMesh[_3D], obsset: Set[Int]) = mesh.operations.maskPoints(pid => obsset.contains(pid.id)).transformedMesh
+
+  def prepareTarget(mesh: TriangleMesh[_3D], obsset: Set[Int]) = {
+    val partial = makePartial(mesh, obsset)
+    (partial, Tchange.getMean(partial.pointSet.pointSequence))
+  }
+
+  def getChain(model: PointDistributionModel[_3D, TriangleMesh], target: TriangleMesh[_3D], rotPoint: Point[_3D], axisd:EuclideanVector[_3D], runSettings: RecoSettings)(implicit rnd: Random) = {
+    FitScripts.fitPartial(model, target, axisd, rotPoint, iidNoiseSigma = runSettings.iidNoise, burnin = runSettings.burnin, numSamples = runSettings.numSamples, subsampling = runSettings.subsampling, tScale = runSettings.tScale, rScale = runSettings.rScale, shapeScale = runSettings.shapeScale, isoShapeScale = runSettings.isoShapeScale)
+  }
+
+  def lossFunction(residual: IndexedSeq[EuclideanVector[_3D]], obs: IndexedSeq[PointId], nobs: IndexedSeq[PointId]): CompItem = {
+    val l2 = L2norm[_3D]()
+    CompItem(
+      l2.norm2Vector(residual) / residual.length,
+      l2.norm2Vector(obs.map(pid => residual(pid.id))) / obs.length,
+      l2.norm2Vector(nobs.map(pid => residual(pid.id))) / nobs.length
+    )
+  }
+
+  def handleChainMeshes(model: PointDistributionModel[_3D, TriangleMesh], chain: IndexedSeq[(TriangleMesh[_3D], Double)], target: TriangleMesh[_3D], obs: IndexedSeq[PointId], nobs: IndexedSeq[PointId], name: String): (CompItem, CompItem, CompItem) = {
+    //returns the MAP and the average point variance
+    val best = chain.maxBy(_._2)._1
+    val meshpoints = chain.map(c => c._1.pointSet.pointSequence)
+    val mean = {
+      val scaledPoints = meshpoints.map(points => points.map(p => p.toVector.map(_ * (1.0 / chain.length))))
+      TriangleMesh3D(scaledPoints.transpose.map(_.reduce(_ + _).toPoint), model.mean.triangulation)
+    }
+    val variance = {
+      meshpoints.foldLeft(IndexedSeq.fill(model.mean.pointSet.numberOfPoints)(0.0)) { case (vs, points) => {
+        points.zip(mean.pointSet.pointSequence).map(t => {
+          val v = (t._1 - t._2).toBreezeVector
+          //breeze.linalg.sum(breeze.linalg.diag(v*v.t)) //extended notation
+          v.t * v
+        }).zip(vs).map(t => t._1 + t._2)
+      }
+      }
+    }.map(d => d / meshpoints.length)
+    val residual = Tchange.getDef(target, best) //TODO discuss if mean should be used here.
+    val residualCorr = Tchange.getDef(target.pointSet, best)
+
+    if (showRun) {
+      val dv = EuclideanVector3D(0.0, 1.0, 0.4).map(_ * 100)
+      val tf = name match {
+        case "original" => Translation3D.apply(EuclideanVector3D.zero)
+        case "ldm" => Translation3D.apply(dv)
+        case "ldmldm" => Translation3D.apply(dv.map(_ * 2.0))
+        case "ldmtildeLdm" => Translation3D.apply(dv.map(_ * 3.0))
+        case "aligned" => Translation3D.apply(dv.map(_ * 4.0))
+        case "apprx" => Translation3D.apply(dv.map(_ * 5.0))
+        case "iterApprx" => Translation3D.apply(dv.map(_ * 6.0))
+
+        case _ => Translation3D.apply(EuclideanVector3D.zero)
+      }
+      val varianceMesh = ScalarMeshField(mean.transform(tf), variance)
+      val lossMesh = ScalarMeshField(mean.transform(tf), residual.map(_.norm))
+      val lossCorrMesh = ScalarMeshField(mean.transform(tf), residualCorr.map(_.norm))
+      Seq((varianceMesh, "Var"), (lossMesh, "Loss"), (lossCorrMesh, "LossCorr")).map { case (scalarMesh, postfix) => {
+        MeshIO.writeScalarMeshField(scalarMesh, new File(vizMeshFolder, s"${name}${postfix}.vtk"))
+        ui.show(scalarMesh, name + postfix)
+      }
+      }
+    }
+
+    (
+      CompItem( //variance
+        variance.sum / model.mean.pointSet.numberOfPoints,
+        obs.map(pid => variance(pid.id)).sum / obs.length,
+        nobs.map(pid => variance(pid.id)).sum / nobs.length
+      ),
+      lossFunction(residual, obs, nobs), //loss clp
+      lossFunction(residualCorr, obs, nobs) //loss correspondence
+    )
+  }
+
+  case class RecoSettings(rotation: Boolean, mcmc: Boolean, rposet: Double, rposer: Double, iidNoise: Double, tildeLdmSigma: Double, tScale: Double, rScale: Double, isoShapeScale: Double, shapeScale: Double, burnin: Int, numSamples: Int, subsampling: Int, numRealignmentsMCMC: Int, toUseLengthBasedRatio: Boolean, icpIterations: Int, numOfLoo: Int, sigma: Double, ratios: IndexedSeq[Double]) {
+    def print(writer: RunWriter, writerLong: Option[RunWriter]=None, fileForWriter: Option[File]=None, msg: Option[String]=None): Unit = {
+      if (writerLong.isDefined) {
+        if (msg.isDefined) writerLong.get.writeLiteral(s"# ${msg.get}")
+        writerLong.get.writeLiteral(s"# for infos on the hyperparameters look at the associated result file ${fileForWriter.getOrElse(new File("")).getName}")
+      }
+
+      writer.writeLiteral(s"rotation = ${if(rotation) 1 else 0};")
+      writer.writeLiteral(s"mcmc = ${if(mcmc) 1 else 0};")
+      writer.writeLiteral(s"iidNoise = $iidNoise;")
+      writer.writeLiteral(s"tildeLdmSigma = $tildeLdmSigma;")
+      writer.writeLiteral(s"tScale = $tScale;")
+      writer.writeLiteral(s"rScale = $rScale;")
+      writer.writeLiteral(s"shapeScale = $shapeScale;")
+      writer.writeLiteral(s"isoShapeScale = $isoShapeScale;")
+      writer.writeLiteral(s"rposet = $rposet;")
+      writer.writeLiteral(s"rposer = $rposer;")
+      writer.writeLiteral(s"burnin = $burnin;")
+      writer.writeLiteral(s"numSamples = $numSamples;")
+      writer.writeLiteral(s"subsampling = $subsampling;")
+      writer.writeLiteral(s"numRealignmentsMCMC = $numRealignmentsMCMC;")
+      writer.writeLiteral(s"toUseLengthBasedRatio = ${if(toUseLengthBasedRatio) 1 else 0};")
+      writer.writeLiteral(s"icpIterations = $icpIterations;")
+      writer.writeLiteral(s"numOfLoo = $numOfLoo;")
+      writer.writeLiteral(s"sigma = ${sigma};")
+    }
   }
 
 }

@@ -1,8 +1,8 @@
 package utility
 
-import scalismo.common.{DiscreteDomain, DiscreteField, PointId, UnstructuredPoints, UnstructuredPoints3D, UnstructuredPointsDomain, UnstructuredPointsDomain3D}
-import scalismo.geometry.{EuclideanVector, EuclideanVector3D, NDSpace, Point, _3D}
-import scalismo.mesh.{TriangleCell, TriangleList, TriangleMesh, TriangleMesh3D}
+import scalismo.common.PointId
+import scalismo.geometry.{EuclideanVector, Point, _3D}
+import scalismo.mesh.TriangleMesh
 
 object MeshUtils {
 
@@ -49,84 +49,19 @@ object MeshUtils {
   }
 
   /**
-   * transforms the points to a mesh. either as cubes or spheres
+   * iteratively cut the points of the mesh that have undefined/nan vertex normals.
    */
-  def pointsToMesh(points: IndexedSeq[Point[_3D]], radius: Double, cubes: Boolean = true): TriangleMesh[_3D] = {
-    if (cubes){
-      val (ps, triangles) = points.zipWithIndex.map(t => {
-        val cubePoints = IndexedSeq(
-          EuclideanVector3D(1,1,1),EuclideanVector3D(-1,1,1),EuclideanVector3D(1,-1,1),EuclideanVector3D(1,1,-1),
-          EuclideanVector3D(-1,-1,1),EuclideanVector3D(-1,1,-1),EuclideanVector3D(1,-1,-1),EuclideanVector3D(-1,-1,-1)
-        ).map(e => t._1 + e*radius)
-        val faces = IndexedSeq(
-          IndexedSeq(0,1,4,2),IndexedSeq(0,1,5,3),IndexedSeq(0,2,6,3), //faces connected to 111
-          IndexedSeq(7,6,3,5),IndexedSeq(7,6,2,4),IndexedSeq(7,5,1,4) //faces connected to -1-1-1
-        )
-        val indices = faces.flatMap(list => {
-          val oneSided = IndexedSeq(IndexedSeq(list(0),list(1),list(2)), IndexedSeq(list(0),list(3),list(2))) //one side
-          oneSided.flatMap(one => IndexedSeq(one,IndexedSeq(one(0),one(2),one(1)))) //double sided
-        })
-        val trianglelist = indices.map(_.map(i => PointId(t._2*8+i))).map(tr => TriangleCell(tr(0),tr(1),tr(2)))
-        (cubePoints, trianglelist)
-      }).unzip
-      TriangleMesh3D(ps.flatten, TriangleList(triangles.flatten))
-    } else {
-      throw new NotImplementedError("not implemented for spheres")
-    }
-  }
-
-  /**
-   * transforms a discreteVectorField to a mesh. TODO add length modifier
-   */
-  def fieldToMesh(vecField: DiscreteField[_3D, UnstructuredPointsDomain, EuclideanVector[_3D]], thicknessMod: Double = 0.05, headMod: Double = 2.0): TriangleMesh[_3D] = {
-    val plusVec: (IndexedSeq[EuclideanVector[_3D]],IndexedSeq[IndexedSeq[Int]]) = {
-      val hs = 0.62 //apprx 1/goldenRatio
-      val cubePoints = IndexedSeq(
-        EuclideanVector3D(1,1,hs),EuclideanVector3D(-1,1,hs),EuclideanVector3D(1,-1,hs),EuclideanVector3D(1,1,0),
-        EuclideanVector3D(-1,-1,hs),EuclideanVector3D(-1,1,0),EuclideanVector3D(1,-1,0),EuclideanVector3D(-1,-1,0)
-      )
-      val arrowPoints = IndexedSeq(
-        EuclideanVector3D(headMod,headMod,hs),EuclideanVector3D(-headMod,headMod,hs),EuclideanVector3D(headMod,-headMod,hs),
-        EuclideanVector3D(-headMod,-headMod,hs), EuclideanVector3D(0,0,1)
-      )
-      val allPoints = (cubePoints++arrowPoints).map(v => EuclideanVector3D(v.x*thicknessMod,v.y*thicknessMod,v.z))
-      val faces = IndexedSeq( //cube with one side open and then a pyramid
-        IndexedSeq(0,1,4,2),IndexedSeq(0,1,5,3),IndexedSeq(0,2,6,3), //faces connected to 111
-        IndexedSeq(7,6,3,5),IndexedSeq(7,6,2,4),IndexedSeq(7,5,1,4), //faces connected to -1-1-1
-        IndexedSeq(8,9,11,10), //base of pyramid
-        IndexedSeq(8,9,12),IndexedSeq(8,10,12),IndexedSeq(9,11,12),IndexedSeq(10,11,12) //sides of pyramid
-      )
-      val indices = faces.flatMap(list => {
-        val oneSided = if (list.length == 3) IndexedSeq(list) else {
-          IndexedSeq(IndexedSeq(list(0), list(1), list(2)), IndexedSeq(list(0), list(3), list(2))) //one side
+  def cutPointsWithUndefinedNormals(mesh: TriangleMesh[_3D], maxIter: Int=10): TriangleMesh[_3D] = {
+    (0 until maxIter).foldLeft((mesh, false))((t,_) => {
+      val (mesh, converged) = t
+      if (converged) t else {
+        val pids = mesh.pointSet.pointIds.filter(pid => mesh.vertexNormals.apply(pid).toArray.exists(d => d.isNaN)).map(_.id).toSet
+        if (pids.isEmpty) (mesh, true) else {
+          val umesh = mesh.operations.maskPoints(pid => !pids.contains(pid.id)).transformedMesh
+          (umesh,false)
         }
-        oneSided.flatMap(one => IndexedSeq(one, IndexedSeq(one(0), one(2), one(1)))) //double sided
-      })
-      (allPoints,indices)
-    }
-
-    val (arrows, triangleLists) = vecField.domain.pointSet.pointIds.map(pid => {
-      val point = vecField.domain.pointSet.point(pid)
-      val vector = vecField(pid)
-      require(math.abs(vector.x) + math.abs(vector.y) < 1e-10, "only implemented for z vectors")
-      val goodPoints = plusVec._1.map(v => point+v*vector.z)
-      val goodTrianglelist = plusVec._2.map(_.map(i => PointId(pid.id*13+i))).map(tr => TriangleCell(tr(0),tr(1),tr(2)))
-      (goodPoints, goodTrianglelist)
-    }).toIndexedSeq.unzip
-    TriangleMesh3D(arrows.flatten, TriangleList(triangleLists.flatten))
-  }
-
-  /**
-   * can be used to do basic deformations (like scaling) to meshes
-   * if no point is provided the mean point of the mesh is used
-   * pnew = f(pold-point) + point
-   * internally:
-   * pnew = pold + f(pold - point) - (pold - point) -> to only scale z by factor of 2 => f(x,y,z)=(x,y,2z)
-   * TODO should scaling be changed to f(x,y,z) = (0,0,z) -> remove implicit -1?
-   */
-  def deformMesh(mesh: TriangleMesh[_3D], f: EuclideanVector[_3D]=>EuclideanVector[_3D], point: Option[Point[_3D]] = None): TriangleMesh[_3D] = {
-    val p = point.getOrElse(Tchange.getMean(mesh))
-    Tchange.meshPlusEv(mesh, mesh.pointSet.pointSequence.map(ap => ap-p).map(v => f(v)-v))
+      }
+    })._1
   }
 
 }
